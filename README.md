@@ -16,8 +16,8 @@ Le script `preprocess_data.py` est utilisé pour charger, filtrer et extraire le
     
 Seules les colonnes des signaux de 1 à 6 sont utilisées, correspondant aux entrées des capteurs de la main.
 3. ## Extraction des caractéristiques :
-   - **DWT (Décomposition en ondelettes)** : Les signaux sont décomposés en plusieurs niveaux de fréquence pour extraire des caractéristiques temporelles et fréquentielles.
-   - ## MFCC (Mel-Frequency Cepstral Coefficients)
+   - DWT (Décomposition en ondelettes): Les signaux sont décomposés en plusieurs niveaux de fréquence pour extraire des caractéristiques temporelles et fréquentielles.
+   - MFCC (Mel-Frequency Cepstral Coefficients)
     Des caractéristiques spectrales sont extraites des signaux, similaires à celles utilisées en traitement du signal audio.
 4. ## Structuration du dataset 
  Les caractéristiques extraites sont combinées dans un fichier CSV, et ce dataset est sauvegardé dans le répertoire `data/preprocessed/` sous le nom `amg_dataset.csv`.

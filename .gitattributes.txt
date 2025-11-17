@@ -1,0 +1,11 @@
+# Traiter les fichiers texte avec des fins de ligne Unix
+* text=auto
+
+# Exclure certains types de fichiers de l'analyse de diff
+*.csv binary
+*.h5 binary
+*.tflite binary
+
+# Traiter les fichiers Markdown et LaTeX comme du texte
+*.md text
+*.tex text

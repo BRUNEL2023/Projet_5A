@@ -1,0 +1,47 @@
+name: CI for Prosthesis AI Project
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.10
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: |
+          # Ici vous pouvez ajouter des commandes pour exécuter des tests, par exemple :
+          # pytest tests/
+          python -m unittest discover
+          
+      - name: Run preprocessing script
+        run: |
+          python data/preprocessed/preprocess_data.py
+          
+      - name: Build model (Optional)
+        run: |
+          python training/scripts/train_model.py
+          
+      - name: Push results (Optional)
+        run: |
+          git add .
+          git commit -m "CI build: Update results"
+          git push

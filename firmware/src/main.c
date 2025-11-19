@@ -23,6 +23,7 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 
 /* USER CODE END Includes */
 
@@ -110,37 +111,54 @@ int main(void)
   /* Calibration de l'ADC */
       HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
 
+  // message de depart de l'UART
       sprintf(msg, "\r\n=== Test ADC 6 Canaux STM32L476RG ===\r\n");
         HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
         sprintf(msg, "Lecture des signaux sur A0-A5 (PA0-PA5)\r\n\r\n");
         HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+
+  /* Start de timers */
         HAL_TIM_Base_Start(&htim2);
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
         /* USER CODE BEGIN WHILE */
         HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 6);
 
-        // Variables pour le filtre passe-haut (IIR 1er ordre)
+        // ------------------------------------------------------------------ VARIABLES -------------------------------------------------
+
+        // Variables pour le filtre passe-haut (1er ordre)
+        // y[n] = ALPHA * (y[n-1] + x[n] - x[n-1])
         // Fréquence de coupure ~ 20 Hz
         #define ALPHA 0.95f
+        // Periode echantillonage (ms)
+		    #define PERIODE_ECHANTILLONAGE 25
 
         float hp_prev[6] = {0};      // Sortie précédente du filtre
         float input_prev[6] = {0};   // Entrée précédente
+        float sum_squares[6];
+
+        uint32_t sample_count;
 
         int16_t min_ac[6], max_ac[6];
 
+        // -------------------------------------------------------------- BOUCLE PRINCIPALE ----------------------------------------------
         while (1)
         {
             // Initialiser min/max
             for(int i = 0; i < 6; i++) {
                 min_ac[i] = 32767;
                 max_ac[i] = -32768;
+                sum_squares[i] = 0;
             }
+            sample_count = 0;
 
-            // Capturer pendant 500ms
+            // Capturer pendant x ms
             uint32_t start = HAL_GetTick();
-            while((HAL_GetTick() - start) < 50) {
+            while((HAL_GetTick() - start) < PERIODE_ECHANTILLONAGE) {
+
+            // attente du callback de conversion
                 while(conversion_complete == 0);
                 conversion_complete = 0;
 
@@ -148,7 +166,7 @@ int main(void)
                 for(int i = 0; i < 6; i++) {
                     float input = (float)adc_buffer[i];
 
-                    // Filtre passe-haut IIR
+                    // Filtre passe-haut
                     float output = ALPHA * (hp_prev[i] + input - input_prev[i]);
 
                     // Sauvegarder pour prochaine itération
@@ -159,7 +177,12 @@ int main(void)
                     int16_t valeur_ac = (int16_t)output;
                     if(valeur_ac < min_ac[i]) min_ac[i] = valeur_ac;
                     if(valeur_ac > max_ac[i]) max_ac[i] = valeur_ac;
+
+                    //calcule du carre
+                    sum_squares[i] += output * output;
                 }
+                //incremente pour le RMS
+                sample_count++;
             }
 
             // Calculer amplitude en mV
@@ -169,31 +192,50 @@ int main(void)
                 amplitude_mv[i] = (amplitude * 3300) / 4095;
             }
 
-            // Affichage pour TOUS les canaux
-            sprintf(msg, "A0: MIN=%5d MAX=%5d AMP=%lu.%03lumV\r\n",
-                    min_ac[0], max_ac[0], amplitude_mv[0]/1000, amplitude_mv[0]%1000);
-            HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
+            // ← AJOUT : Calculer RMS en mV
+            uint32_t rms_mv[6];
+            for(int i = 0; i < 6; i++) {
+            float rms = sqrtf(sum_squares[i] / sample_count);
+             rms_mv[i] = (uint32_t)((rms * 3300.0f) / 4095.0f);
+            }
 
-            sprintf(msg, "A1: MIN=%5d MAX=%5d AMP=%lu.%03lumV\r\n",
-                    min_ac[1], max_ac[1], amplitude_mv[1]/1000, amplitude_mv[1]%1000);
+            // ----------------------------------------------------------------- AFFICHAGE UART ------------------------------------------
+                // Affichage pour TOUS les canaux (avec AMP et RMS)
+            sprintf(msg, "A0: MIN=%5d MAX=%5d AMP=%lu.%03lumV RMS=%lu.%03lumV\r\n",
+                    min_ac[0], max_ac[0], 
+                    amplitude_mv[0]/1000, amplitude_mv[0]%1000,
+                    rms_mv[0]/1000, rms_mv[0]%1000);
             HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-
-            sprintf(msg, "A2: MIN=%5d MAX=%5d AMP=%lu.%03lumV\r\n",
-                    min_ac[2], max_ac[2], amplitude_mv[2]/1000, amplitude_mv[2]%1000);
+            
+            sprintf(msg, "A1: MIN=%5d MAX=%5d AMP=%lu.%03lumV RMS=%lu.%03lumV\r\n",
+                    min_ac[1], max_ac[1], 
+                    amplitude_mv[1]/1000, amplitude_mv[1]%1000,
+                    rms_mv[1]/1000, rms_mv[1]%1000);
             HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-
-            sprintf(msg, "A3: MIN=%5d MAX=%5d AMP=%lu.%03lumV\r\n",
-                    min_ac[3], max_ac[3], amplitude_mv[3]/1000, amplitude_mv[3]%1000);
+            
+            sprintf(msg, "A2: MIN=%5d MAX=%5d AMP=%lu.%03lumV RMS=%lu.%03lumV\r\n",
+                    min_ac[2], max_ac[2], 
+                    amplitude_mv[2]/1000, amplitude_mv[2]%1000,
+                    rms_mv[2]/1000, rms_mv[2]%1000);
             HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-
-            sprintf(msg, "A4: MIN=%5d MAX=%5d AMP=%lu.%03lumV\r\n",
-                    min_ac[4], max_ac[4], amplitude_mv[4]/1000, amplitude_mv[4]%1000);
+            
+            sprintf(msg, "A3: MIN=%5d MAX=%5d AMP=%lu.%03lumV RMS=%lu.%03lumV\r\n",
+                    min_ac[3], max_ac[3], 
+                    amplitude_mv[3]/1000, amplitude_mv[3]%1000,
+                    rms_mv[3]/1000, rms_mv[3]%1000);
             HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-
-            sprintf(msg, "A5: MIN=%5d MAX=%5d AMP=%lu.%03lumV\r\n\r\n",
-                    min_ac[5], max_ac[5], amplitude_mv[5]/1000, amplitude_mv[5]%1000);
+            
+            sprintf(msg, "A4: MIN=%5d MAX=%5d AMP=%lu.%03lumV RMS=%lu.%03lumV\r\n",
+                    min_ac[4], max_ac[4], 
+                    amplitude_mv[4]/1000, amplitude_mv[4]%1000,
+                    rms_mv[4]/1000, rms_mv[4]%1000);
             HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-
+            
+            sprintf(msg, "A5: MIN=%5d MAX=%5d AMP=%lu.%03lumV RMS=%lu.%03lumV\r\n\r\n",
+                    min_ac[5], max_ac[5], 
+                    amplitude_mv[5]/1000, amplitude_mv[5]%1000,
+                    rms_mv[5]/1000, rms_mv[5]%1000);
+            HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
             /* USER CODE END WHILE */
 
             /* USER CODE BEGIN 3 */

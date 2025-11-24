@@ -51,8 +51,33 @@ TIM_HandleTypeDef htim2;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-uint16_t adc_buffer[6];  // Buffer pour 6 canaux (A0 à A5)
+
+//------------------------------------------------------------------------------------------- VARIABLES DE MESURES ----------------------------------------
+// Fréquence d'échantillonnage
+#define FREQ_ECHANTILLONAGE_HZ  1000
+// Nombre d'échantillons à capturer
+#define NB_ECHANTILLONS         1
+
+// Calcul buffer
+#define DUREE_ACQUISITION_MS ((NB_ECHANTILLONS * 1000) / FREQ_ECHANTILLONAGE_HZ)
+#define TAILLE_BUFFER (6 * NB_ECHANTILLONS)
+
+// Configuration Timer2
+#define TIMER_CLOCK_HZ 80000000
+#define TIMER_PRESCALER ((TIMER_CLOCK_HZ / 1000000) - 1)
+#define TIMER_PERIOD ((1000000 / FREQ_ECHANTILLONAGE_HZ) - 1)
+
+// Variables pour le filtre passe-haut (1er ordre)
+// y[n] = ALPHA * (y[n-1] + x[n] - x[n-1])
+// Fréquence de coupure ~ 0.5 Hz
+#define ALPHA 0.997f
+
+// Buffer DMA pour ADC (6 canaux × NB_ECHANTILLONS)
+uint16_t adc_buffer[TAILLE_BUFFER];
+
+// Flag de fin d'acquisition
 volatile uint8_t conversion_complete = 0;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -111,132 +136,57 @@ int main(void)
   /* Calibration de l'ADC */
       HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
 
-  // message de depart de l'UART
-      sprintf(msg, "\r\n=== Test ADC 6 Canaux STM32L476RG ===\r\n");
-        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-        sprintf(msg, "Lecture des signaux sur A0-A5 (PA0-PA5)\r\n\r\n");
-        HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-
-  /* Start de timers */
+  /* Lancement des timers */
         HAL_TIM_Base_Start(&htim2);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
         /* USER CODE BEGIN WHILE */
-        HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 6);
 
-        // ------------------------------------------------------------------ VARIABLES -------------------------------------------------
-
-        // Variables pour le filtre passe-haut (1er ordre)
-        // y[n] = ALPHA * (y[n-1] + x[n] - x[n-1])
-        // Fréquence de coupure ~ 20 Hz
-        #define ALPHA 0.95f
-        // Periode echantillonage (ms)
-		    #define PERIODE_ECHANTILLONAGE 25
+        // ------------------------------------------------------------------ VARIABLES BOUCLE --------------------------------------------
 
         float hp_prev[6] = {0};      // Sortie précédente du filtre
         float input_prev[6] = {0};   // Entrée précédente
         float sum_squares[6];
 
-        uint32_t sample_count;
-
-        int16_t min_ac[6], max_ac[6];
-
         // -------------------------------------------------------------- BOUCLE PRINCIPALE ----------------------------------------------
         while (1)
         {
-            // Initialiser min/max
-            for(int i = 0; i < 6; i++) {
-                min_ac[i] = 32767;
-                max_ac[i] = -32768;
-                sum_squares[i] = 0;
-            }
-            sample_count = 0;
 
-            // Capturer pendant x ms
-            uint32_t start = HAL_GetTick();
-            while((HAL_GetTick() - start) < PERIODE_ECHANTILLONAGE) {
+            //----------------------------------------------------------- AQUISITION -----------------------------------------------------
+            conversion_complete = 0;
+            HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 6);
+    
+            // Attente du callback de conversion
+            while(conversion_complete == 0);
+            
+            // Arrêter le DMA
+            HAL_ADC_Stop_DMA(&hadc1);
+    
 
-            // attente du callback de conversion
-                while(conversion_complete == 0);
-                conversion_complete = 0;
-
-                // Appliquer filtre passe-haut sur chaque canal
+            //----------------------------------------------------------- TRAITEMENT ------------------------------------------------------
+            int16_t valeurs_filtrees[6];
+                
+                // Filtrer les 6 canaux
                 for(int i = 0; i < 6; i++) {
                     float input = (float)adc_buffer[i];
-
+                    
                     // Filtre passe-haut
                     float output = ALPHA * (hp_prev[i] + input - input_prev[i]);
-
+                    
                     // Sauvegarder pour prochaine itération
                     hp_prev[i] = output;
                     input_prev[i] = input;
-
-                    // Mettre à jour min/max
-                    int16_t valeur_ac = (int16_t)output;
-                    if(valeur_ac < min_ac[i]) min_ac[i] = valeur_ac;
-                    if(valeur_ac > max_ac[i]) max_ac[i] = valeur_ac;
-
-                    //calcule du carre
-                    sum_squares[i] += output * output;
+                    
+                    // Convertir en int16_t
+                    valeurs_filtrees[i] = (int16_t)output;
                 }
-                //incremente pour le RMS
-                sample_count++;
-            }
-
-            // Calculer amplitude en mV
-            uint32_t amplitude_mv[6];
-            for(int i = 0; i < 6; i++) {
-                int16_t amplitude = max_ac[i] - min_ac[i];
-                amplitude_mv[i] = (amplitude * 3300) / 4095;
-            }
-
-            // ← AJOUT : Calculer RMS en mV
-            uint32_t rms_mv[6];
-            for(int i = 0; i < 6; i++) {
-            float rms = sqrtf(sum_squares[i] / sample_count);
-             rms_mv[i] = (uint32_t)((rms * 3300.0f) / 4095.0f);
-            }
-
-            // ----------------------------------------------------------------- AFFICHAGE UART ------------------------------------------
-                // Affichage pour TOUS les canaux (avec AMP et RMS)
-            sprintf(msg, "A0: MIN=%5d MAX=%5d AMP=%lu.%03lumV RMS=%lu.%03lumV\r\n",
-                    min_ac[0], max_ac[0], 
-                    amplitude_mv[0]/1000, amplitude_mv[0]%1000,
-                    rms_mv[0]/1000, rms_mv[0]%1000);
-            HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-            
-            sprintf(msg, "A1: MIN=%5d MAX=%5d AMP=%lu.%03lumV RMS=%lu.%03lumV\r\n",
-                    min_ac[1], max_ac[1], 
-                    amplitude_mv[1]/1000, amplitude_mv[1]%1000,
-                    rms_mv[1]/1000, rms_mv[1]%1000);
-            HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-            
-            sprintf(msg, "A2: MIN=%5d MAX=%5d AMP=%lu.%03lumV RMS=%lu.%03lumV\r\n",
-                    min_ac[2], max_ac[2], 
-                    amplitude_mv[2]/1000, amplitude_mv[2]%1000,
-                    rms_mv[2]/1000, rms_mv[2]%1000);
-            HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-            
-            sprintf(msg, "A3: MIN=%5d MAX=%5d AMP=%lu.%03lumV RMS=%lu.%03lumV\r\n",
-                    min_ac[3], max_ac[3], 
-                    amplitude_mv[3]/1000, amplitude_mv[3]%1000,
-                    rms_mv[3]/1000, rms_mv[3]%1000);
-            HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-            
-            sprintf(msg, "A4: MIN=%5d MAX=%5d AMP=%lu.%03lumV RMS=%lu.%03lumV\r\n",
-                    min_ac[4], max_ac[4], 
-                    amplitude_mv[4]/1000, amplitude_mv[4]%1000,
-                    rms_mv[4]/1000, rms_mv[4]%1000);
-            HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-            
-            sprintf(msg, "A5: MIN=%5d MAX=%5d AMP=%lu.%03lumV RMS=%lu.%03lumV\r\n\r\n",
-                    min_ac[5], max_ac[5], 
-                    amplitude_mv[5]/1000, amplitude_mv[5]%1000,
-                    rms_mv[5]/1000, rms_mv[5]%1000);
-            HAL_UART_Transmit(&huart2, (uint8_t*)msg, strlen(msg), HAL_MAX_DELAY);
-            /* USER CODE END WHILE */
+                
+                // Envoyer en BINAIRE (12 bytes : 6 × int16_t)
+                HAL_UART_Transmit(&huart2, (uint8_t*)valeurs_filtrees, 12, HAL_MAX_DELAY);
+    
+             /* USER CODE END WHILE */
 
             /* USER CODE BEGIN 3 */
         }
@@ -423,9 +373,9 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = 7999;
+  htim2.Init.Prescaler = TIMER_PRESCALER;  //défini par le code
+  htim2.Init.Period = TIMER_PERIOD;        //défini par le code
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim2.Init.Period = 9;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)

@@ -53,30 +53,25 @@ UART_HandleTypeDef huart2;
 /* USER CODE BEGIN PV */
 
 //------------------------------------------------------------------------------------------- VARIABLES DE MESURES ----------------------------------------
-// Fréquence d'échantillonnage
-#define FREQ_ECHANTILLONAGE_HZ  1000
-// Nombre d'échantillons à capturer
-#define NB_ECHANTILLONS         1
-
-// Calcul buffer
-#define DUREE_ACQUISITION_MS ((NB_ECHANTILLONS * 1000) / FREQ_ECHANTILLONAGE_HZ)
-#define TAILLE_BUFFER (6 * NB_ECHANTILLONS)
-
-// Configuration Timer2
-#define TIMER_CLOCK_HZ 80000000
-#define TIMER_PRESCALER ((TIMER_CLOCK_HZ / 1000000) - 1)
-#define TIMER_PERIOD ((1000000 / FREQ_ECHANTILLONAGE_HZ) - 1)
 
 // Variables pour le filtre passe-haut (1er ordre)
 // y[n] = ALPHA * (y[n-1] + x[n] - x[n-1])
 // Fréquence de coupure ~ 0.5 Hz
 #define ALPHA 0.997f
 
-// Buffer DMA pour ADC (6 canaux × NB_ECHANTILLONS)
-uint16_t adc_buffer[TAILLE_BUFFER];
+// Buffer DMA pour ADC (6 canaux)
+uint16_t adc_buffer[6];
+
+// Buffer de valeur post filtrée passe haut
+int16_t valeurs_filtrees[6];
 
 // Flag de fin d'acquisition
-volatile uint8_t conversion_complete = 0;
+volatile uint32_t conversion_complete = 0;
+uint32_t last_processed = 0;  
+
+// Flag UART disponible
+volatile uint8_t uart_tx_complete = 1;
+
 
 /* USER CODE END PV */
 
@@ -104,8 +99,6 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-	char msg[200];
-	uint32_t mv[6];
   /* USER CODE END 1 */
 
   /* MCU Configuration--------------------------------------------------------*/
@@ -130,44 +123,37 @@ int main(void)
   MX_ADC1_Init();
   MX_USART2_UART_Init();
   MX_TIM2_Init();
-
   /* USER CODE BEGIN 2 */
 
   /* Calibration de l'ADC */
       HAL_ADCEx_Calibration_Start(&hadc1, ADC_SINGLE_ENDED);
 
+  //Demarrage du DMA
+      HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 6);
+
   /* Lancement des timers */
-        HAL_TIM_Base_Start(&htim2);
+      HAL_TIM_Base_Start(&htim2);
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
-        /* USER CODE BEGIN WHILE */
+  /* USER CODE BEGIN WHILE */
+
 
         // ------------------------------------------------------------------ VARIABLES BOUCLE --------------------------------------------
 
         float hp_prev[6] = {0};      // Sortie précédente du filtre
         float input_prev[6] = {0};   // Entrée précédente
-        float sum_squares[6];
 
         // -------------------------------------------------------------- BOUCLE PRINCIPALE ----------------------------------------------
         while (1)
         {
-
             //----------------------------------------------------------- AQUISITION -----------------------------------------------------
-            conversion_complete = 0;
-            HAL_ADC_Start_DMA(&hadc1, (uint32_t*)adc_buffer, 6);
-    
             // Attente du callback de conversion
-            while(conversion_complete == 0);
-            
-            // Arrêter le DMA
-            HAL_ADC_Stop_DMA(&hadc1);
-    
+            while(conversion_complete == last_processed);
+            last_processed = conversion_complete;
 
             //----------------------------------------------------------- TRAITEMENT ------------------------------------------------------
-            int16_t valeurs_filtrees[6];
-                
                 // Filtrer les 6 canaux
                 for(int i = 0; i < 6; i++) {
                     float input = (float)adc_buffer[i];
@@ -182,15 +168,21 @@ int main(void)
                     // Convertir en int16_t
                     valeurs_filtrees[i] = (int16_t)output;
                 }
-                
-                // Envoyer en BINAIRE (12 bytes : 6 × int16_t)
-                HAL_UART_Transmit(&huart2, (uint8_t*)valeurs_filtrees, 12, HAL_MAX_DELAY);
-    
-             /* USER CODE END WHILE */
 
-            /* USER CODE BEGIN 3 */
+                uart_packet[0] = 0xAA;  // Header (byte d'identification)
+                memcpy(&uart_packet[1], valeurs_filtrees, 12);  // Copier les valeurs filtrees
+
+                // Envoyer en BINAIRE (12 bytes : 6 × int16_t)
+                HAL_UART_Transmit(&huart2, uart_packet, 13, 1);
+
+                
+                
+    
+    /* USER CODE END WHILE */
+
+    /* USER CODE BEGIN 3 */
         }
-        /* USER CODE END 3 */
+  /* USER CODE END 3 */
 }
 
 /**
@@ -264,13 +256,13 @@ static void MX_ADC1_Init(void)
   /** Common config
   */
   hadc1.Instance = ADC1;
-  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV64;
+  hadc1.Init.ClockPrescaler = ADC_CLOCK_ASYNC_DIV16;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
   hadc1.Init.ScanConvMode = ADC_SCAN_ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SEQ_CONV;
   hadc1.Init.LowPowerAutoWait = DISABLE;
-  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.NbrOfConversion = 6;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConv = ADC_EXTERNALTRIG_T2_TRGO;
@@ -373,9 +365,9 @@ static void MX_TIM2_Init(void)
 
   /* USER CODE END TIM2_Init 1 */
   htim2.Instance = TIM2;
-  htim2.Init.Prescaler = TIMER_PRESCALER;  //défini par le code
-  htim2.Init.Period = TIMER_PERIOD;        //défini par le code
+  htim2.Init.Prescaler = 1999;
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
+  htim2.Init.Period = 39;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
   if (HAL_TIM_Base_Init(&htim2) != HAL_OK)
@@ -415,7 +407,7 @@ static void MX_USART2_UART_Init(void)
 
   /* USER CODE END USART2_Init 1 */
   huart2.Instance = USART2;
-  huart2.Init.BaudRate = 115200;
+  huart2.Init.BaudRate = 921600;
   huart2.Init.WordLength = UART_WORDLENGTH_8B;
   huart2.Init.StopBits = UART_STOPBITS_1;
   huart2.Init.Parity = UART_PARITY_NONE;
@@ -472,13 +464,17 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+volatile uint32_t callback_count = 0;
 void HAL_ADC_ConvCpltCallback(ADC_HandleTypeDef* hadc)
 {
     if(hadc->Instance == ADC1)
     {
-        conversion_complete = 1;
+        conversion_complete++;
+        callback_count++;
     }
 }
+
+
 /* USER CODE END 4 */
 
 /**

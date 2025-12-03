@@ -134,6 +134,9 @@ int main(void)
   /* Lancement des timers */
       HAL_TIM_Base_Start(&htim2);
 
+  /* uart packet buffer */
+      uint8_t uart_packet[13];
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
